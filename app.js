@@ -81,15 +81,11 @@ async function connectPort() {
   try {
     port = await navigator.serial.requestPort();
     const baud = parseInt(baudRateSelect.value, 10);
-    await port.open({ baudRate: baud });
+    await port.open({ baudRate: baud, bufferSize: 16384 });
 
     const encoder = new TextEncoderStream();
     outputDone    = encoder.readable.pipeTo(port.writable);
     outputStream  = encoder.writable;
-
-    const decoder = new TextDecoderStream();
-    inputDone     = port.readable.pipeTo(decoder.writable);
-    inputStream   = decoder.readable;
 
     setConnected(true);
     addSysMsg('🔌 Board connected at ' + baud + ' baud');
@@ -121,33 +117,43 @@ async function disconnectPort() {
 
 // ─── Read Loop ────────────────────────────────────────────────
 async function readLoop() {
-  reader = inputStream.getReader();
   let buffer = '';
 
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (!value) continue;
+  while (port && port.readable) {
+    const decoder = new TextDecoderStream();
+    inputDone     = port.readable.pipeTo(decoder.writable);
+    inputStream   = decoder.readable;
+    reader        = inputStream.getReader();
 
-      buffer += value;
-      let idx;
-      while ((idx = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, idx).replace(/\r/g, '').trim();
-        buffer = buffer.slice(idx + 1);
-        if (line) handleIncoming(line);
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+
+        buffer += value;
+        let idx;
+        while ((idx = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, idx).replace(/\r/g, '').trim();
+          buffer = buffer.slice(idx + 1);
+          if (line) handleIncoming(line);
+        }
       }
+      break;
+    } catch (e) {
+      if (e.message && e.message.includes('cancelled')) {
+        break;
+      }
+      addSysMsg('⚠️ Read error: ' + e.message + ' (recovering...)');
+      await delay(100);
+    } finally {
+      try { reader.releaseLock(); } catch (_) {}
+      if (inputDone) await inputDone.catch(() => {});
     }
-  } catch (e) {
-    if (!e.message.includes('cancelled')) {
-      addSysMsg('⚠️ Read error: ' + e.message);
-    }
-  } finally {
-    reader.releaseLock();
   }
 }
 
-// ─── Handle Incoming Lines from Board ─────────────────────────────
+// ─── Handle Incoming Lines from Board ─────────────────────────
 function handleIncoming(line) {
   addDebug('← ' + line);
 
@@ -268,7 +274,7 @@ function handleRxPayload(payload) {
     return;
   }
 
-  // ── Regular text message ──────────────────────────────────────
+  // ── Regular text message ────────────────────────────────────
   if (payload.startsWith('MSG:')) {
     // MSG:id:sender:text
     const parts = payload.split(':');
@@ -290,7 +296,7 @@ function handleRxPayload(payload) {
   addBubble(sender, text, 'received', null, false, mkId());
 }
 
-// ─── Send a text message ────────────────────────────────────────
+// ─── Send a text message ──────────────────────────────────────
 async function sendMessage(text) {
   if (!outputStream || !text.trim()) return;
 
@@ -307,7 +313,7 @@ async function sendMessage(text) {
   await writeSerial(payload);
 }
 
-// ─── Send an Image file over LoRa (chunked) ─────────────────────
+// ─── Send an Image file over LoRa (chunked) ───────────────────
 async function sendImage(file) {
   if (!outputStream) return;
   if (!file.type.startsWith('image/')) {
@@ -388,7 +394,7 @@ async function sendImage(file) {
   addSysMsg('✅ Image "' + file.name + '" sent in ' + totalChunks + ' packets!');
 }
 
-// ─── Write one line to the serial port ───────────────────────────
+// ─── Write one line to the serial port ───────────────────────
 async function writeSerial(text) {
   if (!outputStream) return;
   try {
@@ -521,7 +527,7 @@ function addImageBubble(sender, filename, blobUrl, rawB64, mimeType, direction, 
   };
   senderEl.appendChild(delBtn);
 
-  // ── Image card bubble ────────────────────────────────────────
+  // ── Image card bubble ──────────────────────────────────────
   const bubble = document.createElement('div');
   bubble.className = 'msg-bubble img-bubble';
 
