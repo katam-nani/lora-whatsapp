@@ -81,7 +81,7 @@ async function connectPort() {
   try {
     port = await navigator.serial.requestPort();
     const baud = parseInt(baudRateSelect.value, 10);
-    await port.open({ baudRate: baud, bufferSize: 16384 });
+    await port.open({ baudRate: baud, bufferSize: 65536 });
 
     const encoder = new TextEncoderStream();
     outputDone    = encoder.readable.pipeTo(port.writable);
@@ -118,12 +118,10 @@ async function disconnectPort() {
 // ─── Read Loop ────────────────────────────────────────────────
 async function readLoop() {
   let buffer = '';
+  const decoder = new TextDecoder();
 
   while (port && port.readable) {
-    const decoder = new TextDecoderStream();
-    inputDone     = port.readable.pipeTo(decoder.writable);
-    inputStream   = decoder.readable;
-    reader        = inputStream.getReader();
+    reader = port.readable.getReader();
 
     try {
       while (true) {
@@ -131,7 +129,7 @@ async function readLoop() {
         if (done) break;
         if (!value) continue;
 
-        buffer += value;
+        buffer += decoder.decode(value, { stream: true });
         let idx;
         while ((idx = buffer.indexOf('\n')) >= 0) {
           const line = buffer.slice(0, idx).replace(/\r/g, '').trim();
@@ -144,11 +142,11 @@ async function readLoop() {
       if (e.message && e.message.includes('cancelled')) {
         break;
       }
-      addSysMsg('⚠️ Read error: ' + e.message + ' (recovering...)');
-      await delay(100);
+      addDebug('⚠️ Read error: ' + e.message + ' (recovering...)');
+      await delay(50);
     } finally {
       try { reader.releaseLock(); } catch (_) {}
-      if (inputDone) await inputDone.catch(() => {});
+      reader = null;
     }
   }
 }
